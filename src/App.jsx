@@ -1,10 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ============================================================
-// にじみ v3 — 30秒タイムアタック
-// ・1ゲーム30秒。時間内にどれだけ墨をつくれるか
-// ・盤面が満杯(16マス)になったら、その場でゲームオーバー
-// ・操作はv2と同じドラッグ式(つかむ/吸収/入れ替え)
+// にじみ v4 — スマホ実機向け調整版(Viteプロジェクトの src/App.jsx 用)
+// v3からの変更点:
+//  1. ベストスコアとミュート設定を localStorage に保存(再起動しても残る)
+//  2. セーフエリア対応(ノッチ・ホームバーにUIが隠れない)
+//  3. 効果音を追加(Web Audio APIで合成。素材ファイル不要)+ ミュートボタン
+//  4. 長押しメニュー・テキスト選択の無効化
+//  5. pointermove を requestAnimationFrame で間引き(実機でのカクつき防止)
+// ※ このファイルは手元のViteプロジェクト用です。チャットのプレビューでは
+//    localStorage が動かないため、保存機能だけは実機/ローカルで確認してください。
 // ============================================================
 
 const SIZE = 4;
@@ -15,6 +20,70 @@ const SCORE_MIX = 5;
 const SCORE_SUMI = 30;
 const SPAWN_PER_TURN = 2;
 const INITIAL_DROPS = 6;
+
+// --- localStorage(失敗しても落ちないようtry/catch) ---
+const store = {
+  get(key, fallback) {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : JSON.parse(v);
+    } catch {
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* プライベートモード等では保存されないだけ */
+    }
+  },
+};
+
+// --- 効果音(Web Audio合成。初回タップでコンテキスト生成) ---
+let audioCtx = null;
+const ensureAudio = () => {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) audioCtx = new AC();
+  }
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+};
+
+const playTone = (freq, duration, { type = "sine", gain = 0.12, when = 0 } = {}) => {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime + when;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(gain, t0);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(g).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration);
+};
+
+// 混ぜた時:コンボが続くほど音程が上がる
+const sfxMix = (combo) => {
+  playTone(440 + combo * 70, 0.12, { type: "triangle", gain: 0.1 });
+};
+// 墨ができた時:低い「ぼとっ」+ 余韻
+const sfxSumi = () => {
+  playTone(160, 0.25, { type: "sine", gain: 0.18 });
+  playTone(520, 0.3, { type: "sine", gain: 0.07, when: 0.06 });
+};
+// 終了時
+const sfxEnd = (good) => {
+  if (good) {
+    playTone(523, 0.15, { gain: 0.1 });
+    playTone(659, 0.15, { gain: 0.1, when: 0.12 });
+    playTone(784, 0.25, { gain: 0.1, when: 0.24 });
+  } else {
+    playTone(220, 0.3, { type: "sawtooth", gain: 0.06 });
+    playTone(180, 0.4, { type: "sawtooth", gain: 0.06, when: 0.15 });
+  }
+};
 
 const COLORS = {
   1: { name: "赤", base: "#C73E3A", light: "#E06B5F", fg: "#FFF6EC" },
@@ -67,35 +136,41 @@ const spawnTiles = (tiles, n) => {
 const initTiles = () => spawnTiles([], INITIAL_DROPS);
 const aliveCount = (tiles) => tiles.filter(t => !t.fading).length;
 
-// 盤面レイアウト(%)
 const PAD = 2.6;
 const GAP = 2.6;
 const CELL = (100 - PAD * 2 - GAP * 3) / 4;
 const posPct = (i) => PAD + i * (CELL + GAP);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-export default function Nijimi() {
-  // phase: "ready"(スタート前) / "playing" / "over"
+export default function App() {
   const [phase, setPhase] = useState("ready");
-  const [overReason, setOverReason] = useState(null); // "time" | "full"
+  const [overReason, setOverReason] = useState(null);
   const [tiles, setTiles] = useState(() => initTiles());
   const [score, setScore] = useState(0);
-  const [best, setBest] = useState(0);
+  const [best, setBest] = useState(() => store.get("nijimi.best", 0));
   const [sumi, setSumi] = useState(0);
   const [combo, setCombo] = useState(0);
   const [timeLeft, setTimeLeft] = useState(GAME_SECONDS);
   const [drag, setDrag] = useState(null);
+  const [muted, setMuted] = useState(() => store.get("nijimi.muted", false));
 
   const boardRef = useRef(null);
   const dragChanged = useRef(false);
   const lockRef = useRef(false);
+  const rafRef = useRef(0);
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
+
+  const sfx = useCallback((fn, ...args) => {
+    if (!mutedRef.current) fn(...args);
+  }, []);
 
   const playing = phase === "playing";
 
   // --- タイマー ---
   useEffect(() => {
     if (!playing) return;
-    const startedAt = Date.now() + timeLeft * 1000 - GAME_SECONDS * 1000;
+    const startedAt = Date.now();
     const iv = setInterval(() => {
       const remain = GAME_SECONDS - (Date.now() - startedAt) / 1000;
       if (remain <= 0) {
@@ -115,12 +190,18 @@ export default function Nijimi() {
     setOverReason(reason);
     setDrag(null);
     setScore(s => {
-      setBest(b => Math.max(b, s));
+      setBest(b => {
+        const nb = Math.max(b, s);
+        store.set("nijimi.best", nb);
+        sfx(sfxEnd, s > 0 && s >= b);
+        return nb;
+      });
       return s;
     });
-  }, []);
+  }, [sfx]);
 
   const startGame = () => {
+    ensureAudio(); // iOSは初回のユーザー操作内でしか音を有効化できない
     setTiles(initTiles());
     setScore(0);
     setSumi(0);
@@ -143,13 +224,11 @@ export default function Nijimi() {
     };
   };
 
-  // ターン終了:水滴を補充 → 満杯なら即ゲームオーバー
   const endTurn = useCallback(() => {
     setTiles(prev => {
       const solid = prev.filter(t => !t.fading).map(t => ({ ...t }));
       const next = [...spawnTiles(solid, SPAWN_PER_TURN), ...prev.filter(t => t.fading)];
       if (aliveCount(next) >= SIZE * SIZE) {
-        // 表示してから一拍おいて終了(何が起きたか見えるように)
         setTimeout(() => endGame("full"), 350);
       }
       return next;
@@ -169,6 +248,7 @@ export default function Nijimi() {
   const onPointerDown = (e, tile) => {
     if (!playing || lockRef.current || tile.fading) return;
     e.preventDefault();
+    ensureAudio();
     const p = cellFromPoint(e.clientX, e.clientY);
     dragChanged.current = false;
     setCombo(0);
@@ -178,9 +258,15 @@ export default function Nijimi() {
   useEffect(() => {
     if (!drag || !playing) return;
 
-    const onMove = (e) => {
-      const pt = e.touches ? e.touches[0] : e;
-      const p = cellFromPoint(pt.clientX, pt.clientY);
+    // rAFで間引き:1フレームに1回だけ処理(実機のカクつき・処理落ち防止)
+    let pending = null;
+
+    const process = () => {
+      rafRef.current = 0;
+      if (!pending) return;
+      const p = pending;
+      pending = null;
+
       setDrag(d => d && { ...d, px: p.px, py: p.py });
 
       setTiles(prev => {
@@ -209,7 +295,10 @@ export default function Nijimi() {
                 : t
             );
           setScore(s => s + (madeSumi ? SCORE_SUMI : SCORE_MIX));
-          setCombo(c => c + 1);
+          setCombo(c => {
+            sfx(madeSumi ? sfxSumi : sfxMix, c + 1);
+            return c + 1;
+          });
           if (madeSumi) {
             setSumi(n => n + 1);
             setDrag(null);
@@ -227,6 +316,12 @@ export default function Nijimi() {
       });
     };
 
+    const onMove = (e) => {
+      const pt = e.touches ? e.touches[0] : e;
+      pending = cellFromPoint(pt.clientX, pt.clientY);
+      if (!rafRef.current) rafRef.current = requestAnimationFrame(process);
+    };
+
     const onUp = () => {
       setDrag(null);
       if (dragChanged.current) endTurn();
@@ -239,8 +334,16 @@ export default function Nijimi() {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [drag, playing, endTurn, resolveSumi]);
+  }, [drag, playing, endTurn, resolveSumi, sfx]);
+
+  const toggleMute = () => {
+    setMuted(m => {
+      store.set("nijimi.muted", !m);
+      return !m;
+    });
+  };
 
   const timerRatio = timeLeft / GAME_SECONDS;
   const timerColor = timeLeft <= 5 ? "#C73E3A" : timeLeft <= 10 ? "#D9742B" : "#3E7C5B";
@@ -248,8 +351,9 @@ export default function Nijimi() {
 
   return (
     <div
+      onContextMenu={(e) => e.preventDefault()}
       style={{
-        minHeight: "100vh",
+        minHeight: "100dvh",
         background: "#F5F0E6",
         backgroundImage:
           "radial-gradient(ellipse at 20% 10%, rgba(199,62,58,0.05), transparent 40%)," +
@@ -259,11 +363,16 @@ export default function Nijimi() {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        padding: 16,
+        // セーフエリア:ノッチ・ホームバーを避ける
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
+        paddingLeft: "calc(env(safe-area-inset-left, 0px) + 16px)",
+        paddingRight: "calc(env(safe-area-inset-right, 0px) + 16px)",
         fontFamily: "'Hiragino Mincho ProN', 'Yu Mincho', 'MS Mincho', serif",
         touchAction: "none",
         userSelect: "none",
         WebkitUserSelect: "none",
+        WebkitTouchCallout: "none",
         overflow: "hidden",
       }}
     >
@@ -298,7 +407,23 @@ export default function Nijimi() {
             30秒で、どれだけ墨をつくれるか
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          <button
+            onClick={toggleMute}
+            aria-label={muted ? "音を出す" : "音を消す"}
+            style={{
+              border: "none",
+              background: "#FBF8F0",
+              borderRadius: 10,
+              width: 36,
+              height: 36,
+              fontSize: 16,
+              cursor: "pointer",
+              boxShadow: "0 2px 8px rgba(58,54,48,0.1)",
+            }}
+          >
+            {muted ? "🔇" : "🔊"}
+          </button>
           <ScoreBox label="スコア" value={score} />
           <ScoreBox label="墨" value={sumi} dark />
         </div>
@@ -379,7 +504,7 @@ export default function Nijimi() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: "5.6vmin",
+            fontSize: "min(5.6vmin, 22px)",
             fontWeight: 700,
             cursor: "grab",
             boxShadow: isDragged
@@ -425,7 +550,6 @@ export default function Nijimi() {
           );
         })}
 
-        {/* コンボ表示 */}
         {combo >= 2 && playing && (
           <div style={{
             position: "absolute",
@@ -440,18 +564,12 @@ export default function Nijimi() {
           </div>
         )}
 
-        {/* スタート画面 */}
         {phase === "ready" && (
           <Overlay>
             <div style={{ color: "#3A3630", fontSize: 22, fontWeight: 700, letterSpacing: 3 }}>
               30秒タイムアタック
             </div>
-            <div style={{
-              color: "#5C564A",
-              fontSize: 12.5,
-              lineHeight: 2,
-              textAlign: "center",
-            }}>
+            <div style={{ color: "#5C564A", fontSize: 12.5, lineHeight: 2, textAlign: "center" }}>
               水滴をつかんで、なぞって、まぜる<br />
               <Dot v={1} /> 赤・<Dot v={2} /> 青・<Dot v={4} /> 黄 の三色がそろうと<br />
               <Dot v={7} /> 墨になって消える(+{SCORE_SUMI}点)
@@ -459,11 +577,13 @@ export default function Nijimi() {
             <div style={{ color: "#A02C33", fontSize: 12, fontWeight: 700 }}>
               盤面がいっぱいになったら、その場で終了!
             </div>
+            {best > 0 && (
+              <div style={{ color: "#8B8475", fontSize: 12 }}>ベスト: {best}</div>
+            )}
             <button onClick={startGame} style={btnStyle()}>はじめる</button>
           </Overlay>
         )}
 
-        {/* 結果画面 */}
         {phase === "over" && (
           <Overlay>
             <div style={{ color: "#3A3630", fontSize: 24, fontWeight: 700, letterSpacing: 3 }}>
