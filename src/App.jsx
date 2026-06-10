@@ -1,15 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ============================================================
-// にじみ v4 — スマホ実機向け調整版(Viteプロジェクトの src/App.jsx 用)
-// v3からの変更点:
-//  1. ベストスコアとミュート設定を localStorage に保存(再起動しても残る)
-//  2. セーフエリア対応(ノッチ・ホームバーにUIが隠れない)
-//  3. 効果音を追加(Web Audio APIで合成。素材ファイル不要)+ ミュートボタン
-//  4. 長押しメニュー・テキスト選択の無効化
-//  5. pointermove を requestAnimationFrame で間引き(実機でのカクつき防止)
-// ※ このファイルは手元のViteプロジェクト用です。チャットのプレビューでは
-//    localStorage が動かないため、保存機能だけは実機/ローカルで確認してください。
+// にじみ v5 — 実機ドラッグ問題の修正版(src/App.jsx 差し替え用)
+// v4からの修正:
+//  1. iOS Safariのスクロール/引っ張り更新がドラッグを乗っ取る問題を修正
+//     - ドラッグ中の touchmove を preventDefault(passive: false)
+//     - html/body に overscroll-behavior: none / touch-action: none
+//  2. ドラッグ監視リスナーを「ドラッグ開始時に1回だけ」登録する方式に変更
+//     (旧版は指を動かすたびに貼り直していて、指を離した瞬間の
+//      イベントを取りこぼすと操作不能に見える状態が起き得た)
+//  3. 盤面の更新計算をReactの状態更新関数の外に出し、
+//     スコア加算・効果音・墨処理が二重実行されない構造に変更
 // ============================================================
 
 const SIZE = 4;
@@ -21,7 +22,7 @@ const SCORE_SUMI = 30;
 const SPAWN_PER_TURN = 2;
 const INITIAL_DROPS = 6;
 
-// --- localStorage(失敗しても落ちないようtry/catch) ---
+// --- localStorage ---
 const store = {
   get(key, fallback) {
     try {
@@ -34,13 +35,11 @@ const store = {
   set(key, value) {
     try {
       localStorage.setItem(key, JSON.stringify(value));
-    } catch {
-      /* プライベートモード等では保存されないだけ */
-    }
+    } catch { /* noop */ }
   },
 };
 
-// --- 効果音(Web Audio合成。初回タップでコンテキスト生成) ---
+// --- 効果音 ---
 let audioCtx = null;
 const ensureAudio = () => {
   if (!audioCtx) {
@@ -64,16 +63,11 @@ const playTone = (freq, duration, { type = "sine", gain = 0.12, when = 0 } = {})
   osc.stop(t0 + duration);
 };
 
-// 混ぜた時:コンボが続くほど音程が上がる
-const sfxMix = (combo) => {
-  playTone(440 + combo * 70, 0.12, { type: "triangle", gain: 0.1 });
-};
-// 墨ができた時:低い「ぼとっ」+ 余韻
+const sfxMix = (combo) => playTone(440 + combo * 70, 0.12, { type: "triangle", gain: 0.1 });
 const sfxSumi = () => {
   playTone(160, 0.25, { type: "sine", gain: 0.18 });
   playTone(520, 0.3, { type: "sine", gain: 0.07, when: 0.06 });
 };
-// 終了時
 const sfxEnd = (good) => {
   if (good) {
     playTone(523, 0.15, { gain: 0.1 });
@@ -151,15 +145,19 @@ export default function App() {
   const [sumi, setSumi] = useState(0);
   const [combo, setCombo] = useState(0);
   const [timeLeft, setTimeLeft] = useState(GAME_SECONDS);
-  const [drag, setDrag] = useState(null);
+  const [drag, setDrag] = useState(null); // { id, px, py }
   const [muted, setMuted] = useState(() => store.get("nijimi.muted", false));
 
   const boardRef = useRef(null);
+  const tilesRef = useRef(tiles);           // 最新の盤面を同期的に読むためのミラー
   const dragChanged = useRef(false);
   const lockRef = useRef(false);
-  const rafRef = useRef(0);
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+
+  useEffect(() => { tilesRef.current = tiles; }, [tiles]);
 
   const sfx = useCallback((fn, ...args) => {
     if (!mutedRef.current) fn(...args);
@@ -186,6 +184,7 @@ export default function App() {
   }, [playing]);
 
   const endGame = useCallback((reason) => {
+    if (phaseRef.current !== "playing") return; // 二重終了防止
     setPhase("over");
     setOverReason(reason);
     setDrag(null);
@@ -201,7 +200,7 @@ export default function App() {
   }, [sfx]);
 
   const startGame = () => {
-    ensureAudio(); // iOSは初回のユーザー操作内でしか音を有効化できない
+    ensureAudio();
     setTiles(initTiles());
     setScore(0);
     setSumi(0);
@@ -225,28 +224,29 @@ export default function App() {
   };
 
   const endTurn = useCallback(() => {
-    setTiles(prev => {
-      const solid = prev.filter(t => !t.fading).map(t => ({ ...t }));
-      const next = [...spawnTiles(solid, SPAWN_PER_TURN), ...prev.filter(t => t.fading)];
-      if (aliveCount(next) >= SIZE * SIZE) {
-        setTimeout(() => endGame("full"), 350);
-      }
-      return next;
-    });
+    const solid = tilesRef.current.filter(t => !t.fading).map(t => ({ ...t }));
+    const fading = tilesRef.current.filter(t => t.fading);
+    const next = [...spawnTiles(solid, SPAWN_PER_TURN), ...fading];
+    tilesRef.current = next;
+    setTiles(next);
     setCombo(0);
+    if (aliveCount(next) >= SIZE * SIZE) {
+      setTimeout(() => endGame("full"), 350);
+    }
   }, [endGame]);
 
   const resolveSumi = useCallback((tileId) => {
     lockRef.current = true;
     setTimeout(() => {
-      setTiles(prev => prev.filter(t => t.id !== tileId));
+      tilesRef.current = tilesRef.current.filter(t => t.id !== tileId);
+      setTiles(tilesRef.current);
       lockRef.current = false;
-      endTurn();
+      if (phaseRef.current === "playing") endTurn();
     }, VANISH_MS);
   }, [endTurn]);
 
   const onPointerDown = (e, tile) => {
-    if (!playing || lockRef.current || tile.fading) return;
+    if (!playing || lockRef.current || tile.fading || drag) return;
     e.preventDefault();
     ensureAudio();
     const p = cellFromPoint(e.clientX, e.clientY);
@@ -255,88 +255,103 @@ export default function App() {
     setDrag({ id: tile.id, px: p.px, py: p.py });
   };
 
+  // --- ドラッグ処理 ---
+  // ドラッグ開始時に1回だけリスナー登録(指を動かしても貼り直さない)
+  const dragId = drag ? drag.id : null;
   useEffect(() => {
-    if (!drag || !playing) return;
+    if (dragId === null) return;
 
-    // rAFで間引き:1フレームに1回だけ処理(実機のカクつき・処理落ち防止)
-    let pending = null;
+    let pendingPoint = null;
+    let raf = 0;
+
+    // 盤面更新の本体。Reactの状態更新関数の外で同期的に計算する
+    const applyMove = (p) => {
+      const prev = tilesRef.current;
+      const me = prev.find(t => t.id === dragId);
+      if (!me || me.fading) return;
+      if (me.r === p.r && me.c === p.c) return;
+
+      const resident = prev.find(
+        t => t.id !== dragId && !t.fading && t.r === p.r && t.c === p.c
+      );
+
+      let next;
+      if (!resident) {
+        next = prev.map(t =>
+          t.id === dragId ? { ...t, r: p.r, c: p.c, isNew: false } : t
+        );
+      } else if (canMix(me.value, resident.value)) {
+        const newValue = me.value | resident.value;
+        const madeSumi = newValue === 7;
+        next = prev
+          .filter(t => t.id !== resident.id)
+          .map(t =>
+            t.id === dragId
+              ? { ...t, r: p.r, c: p.c, value: newValue, pop: true, isNew: false,
+                  fading: madeSumi }
+              : t
+          );
+        setScore(s => s + (madeSumi ? SCORE_SUMI : SCORE_MIX));
+        setCombo(c => {
+          sfx(madeSumi ? sfxSumi : sfxMix, c + 1);
+          return c + 1;
+        });
+        if (madeSumi) {
+          setSumi(n => n + 1);
+          setDrag(null);
+          resolveSumi(dragId);
+        }
+      } else {
+        next = prev.map(t => {
+          if (t.id === dragId) return { ...t, r: p.r, c: p.c, isNew: false };
+          if (t.id === resident.id) return { ...t, r: me.r, c: me.c, isNew: false };
+          return t;
+        });
+      }
+      dragChanged.current = true;
+      tilesRef.current = next;
+      setTiles(next);
+    };
 
     const process = () => {
-      rafRef.current = 0;
-      if (!pending) return;
-      const p = pending;
-      pending = null;
-
+      raf = 0;
+      if (!pendingPoint) return;
+      const p = pendingPoint;
+      pendingPoint = null;
       setDrag(d => d && { ...d, px: p.px, py: p.py });
-
-      setTiles(prev => {
-        const me = prev.find(t => t.id === drag.id);
-        if (!me || me.fading) return prev;
-        if (me.r === p.r && me.c === p.c) return prev;
-
-        const resident = prev.find(
-          t => t.id !== me.id && !t.fading && t.r === p.r && t.c === p.c
-        );
-
-        let next;
-        if (!resident) {
-          next = prev.map(t =>
-            t.id === me.id ? { ...t, r: p.r, c: p.c, isNew: false } : t
-          );
-        } else if (canMix(me.value, resident.value)) {
-          const newValue = me.value | resident.value;
-          const madeSumi = newValue === 7;
-          next = prev
-            .filter(t => t.id !== resident.id)
-            .map(t =>
-              t.id === me.id
-                ? { ...t, r: p.r, c: p.c, value: newValue, pop: true, isNew: false,
-                    fading: madeSumi }
-                : t
-            );
-          setScore(s => s + (madeSumi ? SCORE_SUMI : SCORE_MIX));
-          setCombo(c => {
-            sfx(madeSumi ? sfxSumi : sfxMix, c + 1);
-            return c + 1;
-          });
-          if (madeSumi) {
-            setSumi(n => n + 1);
-            setDrag(null);
-            resolveSumi(me.id);
-          }
-        } else {
-          next = prev.map(t => {
-            if (t.id === me.id) return { ...t, r: p.r, c: p.c, isNew: false };
-            if (t.id === resident.id) return { ...t, r: me.r, c: me.c, isNew: false };
-            return t;
-          });
-        }
-        dragChanged.current = true;
-        return next;
-      });
+      applyMove(p);
     };
 
     const onMove = (e) => {
-      const pt = e.touches ? e.touches[0] : e;
-      pending = cellFromPoint(pt.clientX, pt.clientY);
-      if (!rafRef.current) rafRef.current = requestAnimationFrame(process);
+      pendingPoint = cellFromPoint(e.clientX, e.clientY);
+      if (!raf) raf = requestAnimationFrame(process);
     };
 
     const onUp = () => {
       setDrag(null);
-      if (dragChanged.current) endTurn();
+      if (dragChanged.current) {
+        dragChanged.current = false;
+        endTurn();
+      }
     };
+
+    // iOS Safariのスクロール・引っ張り更新を完全に止める(最重要)
+    const preventScroll = (e) => e.preventDefault();
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
+    window.addEventListener("touchmove", preventScroll, { passive: false });
+
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      window.removeEventListener("touchmove", preventScroll);
+      if (raf) cancelAnimationFrame(raf);
     };
-  }, [drag, playing, endTurn, resolveSumi, sfx]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragId, endTurn, resolveSumi, sfx]);
 
   const toggleMute = () => {
     setMuted(m => {
@@ -363,7 +378,6 @@ export default function App() {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        // セーフエリア:ノッチ・ホームバーを避ける
         paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)",
         paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
         paddingLeft: "calc(env(safe-area-inset-left, 0px) + 16px)",
@@ -377,6 +391,15 @@ export default function App() {
       }}
     >
       <style>{`
+        /* スクロール・バウンスの根絶(iOS実機でのドラッグ切れ対策) */
+        html, body, #root {
+          height: 100%;
+          margin: 0;
+          overflow: hidden;
+          overscroll-behavior: none;
+          touch-action: none;
+          -webkit-user-select: none;
+        }
         @keyframes drop-appear {
           0% { transform: scale(0); opacity: 0; }
           70% { transform: scale(1.1); }
@@ -474,6 +497,7 @@ export default function App() {
           background: "#FBF8F0",
           borderRadius: 16,
           boxShadow: "0 4px 24px rgba(58,54,48,0.12), inset 0 0 40px rgba(58,54,48,0.04)",
+          touchAction: "none",
         }}
       >
         {Array.from({ length: SIZE * SIZE }).map((_, i) => {
@@ -507,6 +531,7 @@ export default function App() {
             fontSize: "min(5.6vmin, 22px)",
             fontWeight: 700,
             cursor: "grab",
+            touchAction: "none",
             boxShadow: isDragged
               ? `0 8px 20px ${col.base}88`
               : `0 3px 10px ${col.base}55`,
