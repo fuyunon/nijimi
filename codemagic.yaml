@@ -1,0 +1,68 @@
+# codemagic.yaml — にじみ iOS ビルド設定
+# 置き場所: リポジトリのルート(package.json と同じ階層)
+#
+# 動き: main ブランチに push(=PRマージ)されると自動でビルドが走り、
+#       署名済み .ipa を TestFlight にアップロードする
+
+workflows:
+  ios-release:
+    name: iOS build & TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    # Codemagic に登録した App Store Connect APIキー(名前: codemagic)を使う
+    integrations:
+      app_store_connect: codemagic
+
+    environment:
+      # 署名は Codemagic が APIキー経由で証明書・プロファイルを自動管理
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.fuyunon.nijimi
+      vars:
+        # App Store Connect の「アプリ情報」にある Apple ID(にじみの管理番号)
+        APP_STORE_APPLE_ID: 6779448292
+      node: 22
+      xcode: latest
+
+    # main に push されたら自動ビルド(developへのpushでは走らない)
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+
+    scripts:
+      - name: npm 依存をインストール
+        script: npm ci
+
+      - name: Web アセットをビルド
+        script: npm run build
+
+      - name: Capacitor 同期(dist を iOS プロジェクトへ反映)
+        script: npx cap sync ios
+
+      - name: Xcode プロジェクトに署名設定を適用
+        script: xcode-project use-profiles
+
+      - name: ビルド番号を自動インクリメント
+        script: |
+          cd ios/App
+          LATEST_BUILD_NUMBER=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo "0")
+          agvtool new-version -all $(($LATEST_BUILD_NUMBER + 1))
+
+      - name: ipa をビルド
+        script: |
+          cd ios/App
+          xcode-project build-ipa --project App.xcodeproj --scheme App
+
+    artifacts:
+      - ios/App/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        # ビルド成功後、自動で TestFlight にアップロード
+        submit_to_testflight: true
