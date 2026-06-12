@@ -368,7 +368,7 @@ export default function App() {
     <div
       onContextMenu={(e) => e.preventDefault()}
       style={{
-        minHeight: "100dvh",
+        minHeight: "100vh",
         background: "#F5F0E6",
         backgroundImage:
           "radial-gradient(ellipse at 20% 10%, rgba(199,62,58,0.05), transparent 40%)," +
