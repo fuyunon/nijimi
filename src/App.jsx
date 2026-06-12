@@ -377,7 +377,7 @@ export default function App() {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        justifyContent: "center",
+        justifyContent: "flex-start",
         paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)",
         paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
         paddingLeft: "calc(env(safe-area-inset-left, 0px) + 16px)",
