@@ -38,12 +38,13 @@ workflows:
       - name: 署名設定
         script: xcode-project use-profiles
 
-      # ★ここが重要：IPA生成より前に必ず固定
-      - name: Build Number を強制設定
+      # ビルド番号をタイムスタンプ(現在時刻の通し秒数)で設定。
+      # 毎回必ず前回より大きい数になるので「番号の重複」エラーが起きない。
+      - name: Build Number を設定(タイムスタンプで一意に)
         script: |
           cd ios/App
 
-          BUILD_NUMBER=2
+          BUILD_NUMBER=$(date +%s)
 
           echo "Setting Build Number = $BUILD_NUMBER"
 
