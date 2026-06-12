@@ -10,12 +10,11 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
 
-    # Codemagic に登録した App Store Connect APIキー(名前: codemagic)を使う
-    integrations:
-      app_store_connect: codemagic
-
     environment:
-      # 署名は Codemagic が APIキー経由で証明書・プロファイルを自動管理
+      # Codemagicに登録した環境変数グループ(Issuer ID / 秘密鍵)を読み込む
+      groups:
+        - app_store_credentials
+      # 署名は登録済みの証明書・プロファイルを使用
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.fuyunon.nijimi
@@ -63,6 +62,9 @@ workflows:
 
     publishing:
       app_store_connect:
-        auth: integration
+        # APIキーを直接参照(Personal Accountではintegration参照が解決されないため)
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: 5TANXUMG59
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         # ビルド成功後、自動で TestFlight にアップロード
         submit_to_testflight: true
