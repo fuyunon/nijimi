@@ -56,6 +56,12 @@ workflows:
           cd ios/App
           xcode-project build-ipa --project App.xcodeproj --scheme App
 
+      - name: ビルド番号を設定
+        script: |
+          cd ios/App
+          BUILD_NUMBER=$((PROJECT_BUILD_NUMBER + 1))
+          agvtool new-version -all "$BUILD_NUMBER"
+
     artifacts:
       - ios/App/build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
