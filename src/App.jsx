@@ -377,11 +377,11 @@ export default function App() {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        justifyContent: "flex-start",
-        paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)",
-        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
-        paddingLeft: "calc(env(safe-area-inset-left, 0px) + 16px)",
-        paddingRight: "calc(env(safe-area-inset-right, 0px) + 16px)",
+        justifyContent: "center",
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)",
+        paddingLeft: "calc(env(safe-area-inset-left, 0px) + 8px)",
+        paddingRight: "calc(env(safe-area-inset-right, 0px) + 8px)",
         fontFamily: "'Hiragino Mincho ProN', 'Yu Mincho', 'MS Mincho', serif",
         touchAction: "none",
         userSelect: "none",
@@ -416,7 +416,7 @@ export default function App() {
 
       {/* ヘッダー */}
       <div style={{
-        width: "min(92vw, 380px)",
+        width: "min(96vw, 460px)",
         display: "flex",
         justifyContent: "space-between",
         alignItems: "flex-end",
@@ -454,7 +454,7 @@ export default function App() {
 
       {/* タイマーバー */}
       <div style={{
-        width: "min(92vw, 380px)",
+        width: "min(96vw, 460px)",
         marginBottom: 10,
         display: "flex",
         alignItems: "center",
@@ -492,7 +492,7 @@ export default function App() {
         ref={boardRef}
         style={{
           position: "relative",
-          width: "min(92vw, 380px)",
+          width: "min(96vw, 460px)",
           aspectRatio: "1",
           background: "#FBF8F0",
           borderRadius: 16,
