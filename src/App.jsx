@@ -658,9 +658,18 @@ export default function App() {
         <div style={{ color: cellsUsed >= 13 ? "#A02C33" : "#B0A998", fontSize: 11, fontWeight: cellsUsed >= 13 ? 700 : 400 }}>
           盤面 {cellsUsed} / {SIZE * SIZE} — 満杯で終了
         </div>
-        {playing && (
-          <button onClick={() => endGame("time")} style={btnStyle()}>やめる</button>
-        )}
+        <div style={{ minWidth: 108, display: "flex", justifyContent: "flex-end" }}>
+          <button
+            onClick={() => endGame("time")}
+            style={{
+              ...btnStyle(),
+              visibility: playing ? "visible" : "hidden",
+              pointerEvents: playing ? "auto" : "none",
+            }}
+          >
+            やめる
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -729,7 +738,12 @@ function btnStyle() {
   return {
     border: "1px solid rgba(58,54,48,0.25)",
     borderRadius: 10,
-    padding: "9px 18px",
+    padding: "0 18px",
+    height: 40,
+    minWidth: 108,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
     fontSize: 13,
     fontWeight: 700,
     cursor: "pointer",
