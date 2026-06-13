@@ -378,6 +378,7 @@ export default function App() {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
+        transform: "translateY(-3vh)",
         paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)",
         paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)",
         paddingLeft: "calc(env(safe-area-inset-left, 0px) + 8px)",
